@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # PostgreSQL (Источник + DWH)
+  # ============================================
+  postgres:
+    image: postgres:15
+    container_name: lab_postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: lab_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - lab_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d lab_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # ClickHouse (Витрины отчётов)
+  # ============================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: lab_clickhouse
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DB: lab_db
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    networks:
+      - lab_net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  cassandra:
+    image: cassandra:4.1
+    container_name: lab_cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: "Lab Cluster"
+      CASSANDRA_DC: "datacenter1"
+      CASSANDRA_ENDPOINT_SNITCH: "GossipingPropertyFileSnitch"
+      CASSANDRA_NUM_TOKENS: 256
+    ports:
+      - "9042:9042"
+      - "7199:7199"
+      - "9160:9160"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - lab_net
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================
+  # Spark (ETL обработка)
+  # ============================================
+  spark:
+    build: .
+    container_name: lab_spark
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./spark_jobs:/opt/spark/work-dir/spark_jobs
+      - ./data:/opt/spark/work-dir/data
+      - ./jars:/opt/spark/work-dir/jars
+      - ./sql:/opt/spark/work-dir/sql
+    networks:
+      - lab_net
+    environment:
+      - SPARK_HOME=/opt/spark
+      - PYTHONPATH=/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip
+      - PYSPARK_PYTHON=python3
+      - PATH=/opt/spark/bin:/opt/spark/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    working_dir: /opt/spark/work-dir
+    command: tail -f /dev/null
+
+volumes:
+  pg_data:
+  ch_data:
+  cassandra_data:
+
+networks:
+  lab_net:
+    driver: bridge
